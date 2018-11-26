@@ -1,7 +1,7 @@
-__kernel void k_function( __global const int *A, __global int *B, const int N) {
-    int i = get_global_id(0);
-	if(i > N - 1) return;
-	int left = i > 0 ? A[i - 1] > A[i] : 1;
-	int right = i < N - 1 ? A[i + 1] > A[i] : 1;
-    B[i] = left && right;
+__kernel void k_function( __global const int *graph, __global int *output, const int graph_size) {
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+    if(x > graph_size - 1) return;
+    if(y > graph_size - 1) return;
+    output[x * graph_size + y] = graph[x * graph_size + y] + 1;
 }
