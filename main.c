@@ -10,7 +10,7 @@
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
 #include <CL/cl.h>
 
-const int GRAPH_SIZE = 8;
+const int GRAPH_SIZE = 1000;
 
 #define EDGE_COST(graph, graph_size, a, b) graph[a * graph_size + b]
 #define D(a, b) EDGE_COST(output, graph_size, a, b)
@@ -99,13 +99,10 @@ int main(int argc, char const *argv[]) {
 
     generate_random_graph(graph, GRAPH_SIZE);
 
-    print_tab(graph, GRAPH_SIZE);
     fprintf(stderr, "running on cpu...\n");
     TIMER_START();
     floyd_warshall_cpu(graph, GRAPH_SIZE, output_cpu);
     TIMER_STOP();
-    print_tab(output_cpu, GRAPH_SIZE);
-
 
     size_t source_size;
     char *source = load_kernel(&source_size);
@@ -120,13 +117,11 @@ int main(int argc, char const *argv[]) {
     cl_command_queue queue = clCreateCommandQueue(context, device_id, 0, &ret);
 
     cl_mem graph_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), NULL, &ret);
-    cl_mem output_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), NULL, &ret);
 
     ret = clEnqueueWriteBuffer(queue, graph_dev, CL_TRUE, 0, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), graph, 0, NULL, NULL);
 
     cl_program program = clCreateProgramWithSource(context, 1, (const char**) &source,
             (const size_t *) &source_size, &ret);
-    printf("create program with source: %d\n", ret);
     
 
     ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
@@ -139,31 +134,36 @@ int main(int argc, char const *argv[]) {
 	}
 
     cl_kernel kernel = clCreateKernel(program, "k_function", &ret);
-    printf("create kernel %d\n", ret);
 
-    ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&graph_dev);
-    ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&output_dev);
-    ret = clSetKernelArg(kernel, 2, sizeof(int), &GRAPH_SIZE);
+    for (int k = 0; k < GRAPH_SIZE; k++) {
+        ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&graph_dev);
+        ret = clSetKernelArg(kernel, 1, sizeof(int), &GRAPH_SIZE);
+        ret = clSetKernelArg(kernel, 2, sizeof(int), &k);
 
-    size_t global_item_size[] = { GRAPH_SIZE, GRAPH_SIZE };
-    //size_t local_item_size = 64;
-    ret = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global_item_size,
-            NULL, 0, NULL, NULL);
-    printf("enqueue kernel %d\n", ret);
+        size_t global_item_size[] = { GRAPH_SIZE, GRAPH_SIZE };
+        //size_t local_item_size = 64;
+        TIMER_START();
+        ret = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global_item_size,
+                NULL, 0, NULL, NULL);
 
-    ret = clFinish(queue);
+        ret = clFinish(queue);
+    }
+    TIMER_STOP();
 
-    ret = clEnqueueReadBuffer(queue, output_dev, CL_TRUE, 0,
+    ret = clEnqueueReadBuffer(queue, graph_dev, CL_TRUE, 0,
             GRAPH_SIZE * GRAPH_SIZE * sizeof(int), output_gpu, 0, NULL, NULL);
 
-    print_tab(output_gpu, GRAPH_SIZE);
+    if (memcmp(output_cpu, output_gpu, GRAPH_SIZE * GRAPH_SIZE) != 0) {
+        fprintf(stderr, "FAIL!\n");
+    } else {
+        printf("correct\n");
+    }
 
     clFlush(queue);
     clFinish(queue);
     clReleaseKernel(kernel);
     clReleaseProgram(program);
     clReleaseMemObject(graph_dev);
-    clReleaseMemObject(output_dev);
     clReleaseCommandQueue(queue);
     clReleaseContext(context);
     free(graph);
