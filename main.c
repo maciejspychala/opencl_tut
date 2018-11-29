@@ -11,6 +11,11 @@
 #include <CL/cl.h>
 
 const int GRAPH_SIZE = 1000;
+cl_command_queue queue;
+cl_kernel kernel;
+cl_program program;
+cl_mem graph_dev;
+cl_context context;
 
 #define EDGE_COST(graph, graph_size, a, b) graph[a * graph_size + b]
 #define D(a, b) EDGE_COST(output, graph_size, a, b)
@@ -22,6 +27,18 @@ const int GRAPH_SIZE = 1000;
     fprintf(stderr, "%f secs\n", time_delta)
 
 #define INF 0x1fffffff
+
+char* load_kernel(size_t *source_size) {
+    FILE *fp = fopen("kernel.cl", "r");
+    if (!fp) {
+        fprintf(stderr, "Failed to load kernel.\n");
+        exit(1);
+    }
+    char *source = (char*) malloc(MAX_SOURCE_SIZE);
+    *source_size = fread(source, 1, MAX_SOURCE_SIZE, fp);
+    fclose(fp);
+    return source;
+}
 
 void generate_random_graph(int *output, int graph_size) {
     srand(0xdadadada);
@@ -35,7 +52,44 @@ void generate_random_graph(int *output, int graph_size) {
 }
 
 void floyd_warshall_gpu(const int *graph, int graph_size, int *output) {
-    // TODO
+    size_t source_size;
+    char *source = load_kernel(&source_size);
+
+    cl_platform_id platform_id = NULL;
+    cl_device_id device_id = NULL;
+    cl_int ret;
+
+    clGetPlatformIDs(1, &platform_id, NULL);
+    clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, NULL);
+    context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &ret);
+    queue = clCreateCommandQueue(context, device_id, 0, &ret);
+
+    graph_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), NULL, &ret);
+    ret = clEnqueueWriteBuffer(queue, graph_dev, CL_TRUE, 0, graph_size * graph_size * sizeof(int), graph, 0, NULL, NULL);
+
+    program = clCreateProgramWithSource(context, 1, (const char**) &source, (const size_t *) &source_size, &ret);
+
+    ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
+    if (ret == CL_BUILD_PROGRAM_FAILURE) {
+        size_t log_size;
+        char *log = (char *) malloc(MAX_SOURCE_SIZE);
+        ret = clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+        printf("log: %s\n", log);
+        printf("source: %s\n", source);
+    }
+
+    kernel = clCreateKernel(program, "k_function", &ret);
+    for (int k = 0; k < GRAPH_SIZE; k++) {
+        ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&graph_dev);
+        ret = clSetKernelArg(kernel, 1, sizeof(int), &GRAPH_SIZE);
+        ret = clSetKernelArg(kernel, 2, sizeof(int), &k);
+
+        size_t global_item_size[] = { GRAPH_SIZE, GRAPH_SIZE };
+        clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global_item_size, NULL, 0, NULL, NULL);
+
+        clFinish(queue);
+    }
+    clEnqueueReadBuffer(queue, graph_dev, CL_TRUE, 0, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), output, 0, NULL, NULL);
 }
 
 void floyd_warshall_cpu(const int *graph, int graph_size, int *output) {
@@ -54,39 +108,7 @@ void floyd_warshall_cpu(const int *graph, int graph_size, int *output) {
     }
 }
 
-void print_tab(int *tab, int graph_size) {
-    printf("%5s ", " ");
-    char letter = 'a';
-    for (int i = 0; i < graph_size; i++) {
-        printf("%5c ", letter++);
-    }
-    printf("\n");
-    letter = 'a';
-    for (int i = 0; i < graph_size; i++) {
-        printf("%5c ", letter++);
-        for (int j = 0; j < graph_size; j++) {
-            int val = tab[i * graph_size + j];
-            val = val >= INF ? -1 : val;
-            printf("%5d ", val);
-        }
-        printf("\n");
-    }
-}
-
-char* load_kernel(size_t *source_size) {
-    FILE *fp = fopen("kernel.cl", "r");
-    if (!fp) {
-        fprintf(stderr, "Failed to load kernel.\n");
-        exit(1);
-    }
-    char *source = (char*) malloc(MAX_SOURCE_SIZE);
-    *source_size = fread(source, 1, MAX_SOURCE_SIZE, fp);
-    fclose(fp);
-    return source;
-}
-
 int main(int argc, char const *argv[]) {
-
     struct timeval tv1, tv2, tv;
     float time_delta;
 
@@ -104,54 +126,10 @@ int main(int argc, char const *argv[]) {
     floyd_warshall_cpu(graph, GRAPH_SIZE, output_cpu);
     TIMER_STOP();
 
-    size_t source_size;
-    char *source = load_kernel(&source_size);
-
-    cl_platform_id platform_id = NULL;
-    cl_device_id device_id = NULL;
-    cl_int ret;
-
-    clGetPlatformIDs(1, &platform_id, NULL);
-    clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, NULL);
-    cl_context context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &ret);
-    cl_command_queue queue = clCreateCommandQueue(context, device_id, 0, &ret);
-
-    cl_mem graph_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), NULL, &ret);
-
-    ret = clEnqueueWriteBuffer(queue, graph_dev, CL_TRUE, 0, GRAPH_SIZE * GRAPH_SIZE * sizeof(int), graph, 0, NULL, NULL);
-
-    cl_program program = clCreateProgramWithSource(context, 1, (const char**) &source,
-            (const size_t *) &source_size, &ret);
-    
-
-    ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
-	if (ret == CL_BUILD_PROGRAM_FAILURE) {
-		size_t log_size;
-		char *log = (char *) malloc(MAX_SOURCE_SIZE);
-		ret = clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
-		printf("log: %s\n", log);
-		printf("source: %s\n", source);
-	}
-
-    cl_kernel kernel = clCreateKernel(program, "k_function", &ret);
-
-    for (int k = 0; k < GRAPH_SIZE; k++) {
-        ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&graph_dev);
-        ret = clSetKernelArg(kernel, 1, sizeof(int), &GRAPH_SIZE);
-        ret = clSetKernelArg(kernel, 2, sizeof(int), &k);
-
-        size_t global_item_size[] = { GRAPH_SIZE, GRAPH_SIZE };
-        //size_t local_item_size = 64;
-        TIMER_START();
-        ret = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global_item_size,
-                NULL, 0, NULL, NULL);
-
-        ret = clFinish(queue);
-    }
+    fprintf(stderr, "running on gpu...\n");
+    TIMER_START();
+    floyd_warshall_gpu(graph, GRAPH_SIZE, output_gpu);
     TIMER_STOP();
-
-    ret = clEnqueueReadBuffer(queue, graph_dev, CL_TRUE, 0,
-            GRAPH_SIZE * GRAPH_SIZE * sizeof(int), output_gpu, 0, NULL, NULL);
 
     if (memcmp(output_cpu, output_gpu, GRAPH_SIZE * GRAPH_SIZE) != 0) {
         fprintf(stderr, "FAIL!\n");
